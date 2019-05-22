@@ -132,7 +132,7 @@ void *wsRecvThread(void *arg)
         }
       } while (strlen(tmp) > 1);
       fprintf(stdout, "key %s\n", (char *) keyIn);
-      SHA1((unsigned char *)keyIn, strlen(keyIn), keyOut);
+      SHA1((unsigned char *)keyIn, SHA_DIGEST_LENGTH, keyOut);
       strcpy((char *) buffer, "HTTP/1.1 101 Switching Protocols\nConnection: Upgrade\nUpgrade: websocket\nSec-WebSocket-Accept: ");
       j = strlen((char *) buffer);
       strcat((char *)buffer, (char *) base64_encode(keyOut, strlen((char *) keyOut), NULL));
