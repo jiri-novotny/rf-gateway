@@ -15,8 +15,9 @@
 #include "const.h"
 #include "crypto.h"
 #include "rf.h"
-#include "queue.h"
 #include "thpool.h"
+#include "hashmap.h"
+#include "list.h"
 
 #define ETH_P_NONE 0x00FF
 
@@ -24,11 +25,8 @@ typedef struct
 {
   uint8_t run;
   int sock;
-  uint32_t addr;
-  uint8_t key[16];
-  uint8_t iv[16];
-  uint8_t ctr;
-  Queue_t packetQueue;
+  RfDevice_t gw;
+  struct hashmap *devices;
   threadpool thpool;
 } Rf_t;
 
@@ -68,34 +66,58 @@ uint16_t rfInit(char *iface)
   }
 
   rf.run = 1;
-  memcpy(&rf.addr, req.ifr_hwaddr.sa_data, 4);
-  memset(rf.key, 0xff, 16);
-  memset(rf.iv, 0xAA, 16);
-  rf.ctr = 0;
-  initQueue(&rf.packetQueue);
-  rf.thpool = thpool_init(8);
-  
+  memcpy(&rf.gw.addr, req.ifr_hwaddr.sa_data, 4);
+  rf.devices = hashmap_create();
+
+  memset(rf.gw.key, 0xff, 16);
+  memset(rf.gw.iv, 0xAA, 16);
+  rf.thpool = thpool_init(4);
+
   return 0;
 }
 
 uint16_t rfDeInit()
 {
   rf.run = 0;
+  struct iterator *entries;
+  RfDevice_t *dev;
+
+  rf.run = 0;
+  entries = hashmap_iterator(rf.devices);
+  while (entries->next(entries)) {
+    struct hentry *entry = entries->current;
+    dev = (RfDevice_t *) entry->value;
+    list_destroy(dev->packetQueue);
+  }
+  entries->destroy(entries);
+  hashmap_destroy(rf.devices);
   thpool_destroy(rf.thpool);
-  queueClear(&rf.packetQueue);
+
   close(rf.sock);
   return 0;
 }
 
-uint16_t rfEnqueuePacket(uint8_t *data, uint8_t len, int originFd, void *misc, int miscLen)
+uint16_t rfEnqueuePacket(RfPacket_t *packet)
 {
-  memcpy(data + I_SRC, &rf.addr, 4);
-  data[I_FLAGS] &= 0xe0;
-  data[I_FLAGS] |= len - I_PAYLOAD;
-  data[I_CTR] = rf.ctr++;
-  push(&rf.packetQueue, data, MAX_PACKET_LEN, originFd, misc, miscLen);
-  thpool_add_work(rf.thpool, rfSendPacket, NULL);
-  return 0;
+  uint32_t dst;
+  RfDevice_t *dev;
+
+  if (packet != NULL)
+  {
+    memcpy(&dst, packet->data + I_DST, 4);
+    memcpy(packet->data + I_SRC, &rf.gw.addr, 4);
+    dev = hashmap_get(rf.devices, dst);
+    if (dev != NULL)
+    {
+      packet->data[I_FLAGS] &= 0xe0;
+      packet->data[I_FLAGS] |= packet->len - I_PAYLOAD;
+      packet->data[I_CTR] = dev->ctr++;
+      list_push(dev->packetQueue, packet);
+      thpool_add_work(rf.thpool, rfSendPacket, dev);
+      return 0;
+    }
+  }
+  return 1;
 }
 
 void *rfRecvThread(void *arg)
@@ -122,7 +144,7 @@ void *rfRecvThread(void *arg)
       }
       printf("}\n");
 
-      decryptPacket(rxbuf + I_SRC, 32, rf.key, rf.iv, rxbuf + I_SRC);
+      decryptPacket(rxbuf + I_SRC, 32, rf.gw.key, rf.gw.iv, rxbuf + I_SRC);
       crc = crc16(rxbuf + I_SRC, 30);
       printf("data: { ");
       for (i = 0; i < len; i += 4)
@@ -157,16 +179,19 @@ uint16_t crc16(const uint8_t* data, uint8_t length)
 void rfSendPacket(void *arg)
 {
   uint16_t crc;
-  Packet_t *tmp;
+  uint16_t sleep;
+  RfPacket_t *tmp;
+  RfDevice_t *dev = (RfDevice_t *) arg;
 
-  while (!queueEmpty(&rf.packetQueue))
+  while (false == list_empty(dev->packetQueue))
   {
-    tmp = first(&rf.packetQueue);
+    tmp = list_first(dev->packetQueue);
     RAND_bytes(tmp->data + I_RAND, 1);
+    RAND_bytes((uint8_t *) &sleep, 2);
     crc = crc16(tmp->data + I_SRC, 30);
     memcpy(tmp->data + I_CRC, &crc, 2);
-    encryptPacket(tmp->data + I_SRC, 32, rf.key, rf.iv, tmp->data + I_SRC);
+    encryptPacket(tmp->data + I_SRC, 32, dev->key, dev->iv, tmp->data + I_SRC);
     send(rf.sock, tmp->data, MAX_PACKET_LEN, 0);
-    usleep(2000);
+    usleep(2000 + sleep);
   }
 }

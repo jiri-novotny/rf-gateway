@@ -1,12 +1,12 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <sys/un.h>
 #include <errno.h>
-#include <string.h>
 #include <linux/if.h>
 #include <linux/if_packet.h>
 #include <linux/if_arp.h>
@@ -19,7 +19,6 @@
 
 #include "udp.h"
 #include "const.h"
-#include "queue.h"
 #include "rf.h"
 
 typedef struct
@@ -71,29 +70,32 @@ uint16_t udpDeInit()
 
 void *udpListener(void *arg)
 {
-  int i;
-  struct sockaddr_in clientAddr;
-  socklen_t clientLen;
-  int len;
-  uint8_t data[MAX_PACKET_LEN];
+  RfPacket_t *packet;
 
   while (udp.run)
   {
-    memset(data, 0, MAX_PACKET_LEN);
-    len = recvfrom(udp.sock, data, MAX_PACKET_LEN, 0, (struct sockaddr *) &clientAddr, &clientLen);
-    if (len < 0)
+    packet = (RfPacket_t *) calloc(1, sizeof(RfPacket_t));
+    if (packet != NULL)
     {
-      fprintf(stderr, "recvfrom failed\n");
-    }
-    else
-    {
-      rfEnqueuePacket(data, len, udp.sock, &clientAddr, clientLen);
-      fprintf(stdout, "udp:  { ");
-      for (i = 0; i < len; i += 1)
+      packet->len = recvfrom(udp.sock, packet->data, MAX_PACKET_LEN, 0, (struct sockaddr *) &packet->misc, (socklen_t *) &packet->miscLen);
+      if (packet->len < 0)
       {
-        printf("%02x ", data[i]);
+        fprintf(stderr, "recvfrom failed\n");
+        free(packet);
       }
-      printf("}\n");
+      else
+      {
+        packet->origin = udp.sock;
+        rfEnqueuePacket(packet);
+#if 0
+        fprintf(stdout, "udp:  { ");
+        for (int i = 0; i < packet->len; i += 1)
+        {
+          printf("%02x ", packet->data[i]);
+        }
+        printf("}\n");
+#endif
+      }
     }
   }
 
