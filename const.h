@@ -2,16 +2,24 @@
 #define CONST_H
 
 /* global constants and config */
-#define MAX_PACKET_LEN              36
+#define MAX_PACKET_LEN              256
 
 #define I_DST                       0
 #define I_SRC                       4
-#define I_RAND                      8
+#define I_CTRL                      8
 #define I_CTR                       9
-#define I_FLAGS                     10
+#define I_RND                       10
 #define I_CMD                       11
-#define I_PAYLOAD                   12
-#define I_CRC                       34
+#define I_LEN                       12
+#define I_DATA                      13
+
+#define C_DISCOVER                  0x01 /* sink -> device */
+#define C_DISCOVER_RESP             0x81
+#define C_READ_REG                  0x02 /* sink -> device */
+#define C_RW_RESP                   0x82
+#define C_WRITE_REG                 0x03 /* sink -> device */
+#define C_NOTIFY                    0x84
+#define C_ACK                       0x04 /* sink -> device */
 
 /**
  * Get byte length of the register

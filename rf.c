@@ -97,24 +97,38 @@ uint16_t rfDeInit()
   return 0;
 }
 
+uint16_t rfAddDevice(RfDevice_t *newDev)
+{
+  RfDevice_t *old = hashmap_set(rf.devices, newDev->addr, newDev);
+  if (old != NULL)
+  {
+    printf("old dev found!\n");
+    free(old);
+  }
+  printf("dev %08x stored\n", newDev->addr);
+  return 0;
+}
+
 uint16_t rfEnqueuePacket(RfPacket_t *packet)
 {
-  uint32_t dst;
   RfDevice_t *dev;
 
   if (packet != NULL)
   {
-    memcpy(&dst, packet->data + I_DST, 4);
     memcpy(packet->data + I_SRC, &rf.gw.addr, 4);
-    dev = hashmap_get(rf.devices, dst);
+    printf("packet to %08x\n", *((uint32_t *)(packet->data + I_DST)));
+    dev = hashmap_get(rf.devices, *((uint32_t *)(packet->data + I_DST)));
     if (dev != NULL)
     {
-      packet->data[I_FLAGS] &= 0xe0;
-      packet->data[I_FLAGS] |= packet->len - I_PAYLOAD;
       packet->data[I_CTR] = dev->ctr++;
       list_push(dev->packetQueue, packet);
+      printf("scheduling packet %d\n", packet->data[I_CTR]);
       thpool_add_work(rf.thpool, rfSendPacket, dev);
       return 0;
+    }
+    else
+    {
+      printf("dev not found\n");
     }
   }
   return 1;
@@ -125,10 +139,14 @@ void *rfRecvThread(void *arg)
   int i;
   int len;
   uint8_t rxbuf[MAX_PACKET_LEN];
+  uint8_t txbuf[MAX_PACKET_LEN];
   uint16_t crc;
+  RfDevice_t *rd;
 
   while (rf.run)
   {
+    memset(txbuf, 0, MAX_PACKET_LEN);
+    memcpy(txbuf + I_SRC, &rf.gw.addr, 4);
     len = recvfrom(rf.sock, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
     if (len < 0) continue;
     if (len == 0)
@@ -137,24 +155,60 @@ void *rfRecvThread(void *arg)
     }
     else
     {
-      printf("enc:  { ");
-      for (i = 0; i < len; i += 4)
+      printf("recv: { ");
+      for (i = 0; i < len; i += 1)
       {
-        printf("%02x %02x %02x %02x ", rxbuf[i], rxbuf[i + 1], rxbuf[i + 2], rxbuf[i + 3]);
+        printf("%02x ", rxbuf[i]);
       }
-      printf("}\n");
+      printf("}");
 
-      decryptPacket(rxbuf + I_SRC, 32, rf.gw.key, rf.gw.iv, rxbuf + I_SRC);
-      crc = crc16(rxbuf + I_SRC, 30);
-      printf("data: { ");
-      for (i = 0; i < len; i += 4)
+      rd = hashmap_get(rf.devices, *((uint32_t *) &rxbuf[4]));
+      if (rd != NULL)
       {
-        printf("%02x %02x %02x %02x ", rxbuf[i], rxbuf[i + 1], rxbuf[i + 2], rxbuf[i + 3]);
-      }
-      printf("}, crc %s\n", (memcmp(rxbuf + 34, &crc, 2) == 0) ? "ok" : "fail");
+        if (rxbuf[I_CTRL] & 0x80)
+        {
+          decryptPacket(rxbuf + I_CTR, 16, rd->key, rd->iv, rxbuf + I_CTR);
+          printf("\ndec:  { ");
+          for (i = 0; i < len; i += 1)
+          {
+            printf("%02x ", rxbuf[i]);
+          }
+          printf("}");
+        }
+        crc = crc16(rxbuf + I_SRC, 9 + rxbuf[I_LEN]);
 
-      //parse();
-      //pop(&rf.packetQueue);
+        if (memcmp(rxbuf + 13 + rxbuf[I_LEN], &crc, 2) == 0)
+        {
+          printf(", crc ok\n");
+          memcpy(txbuf, rxbuf + I_SRC, 4);
+          switch (rxbuf[I_CMD])
+          {
+          case C_NOTIFY:
+            txbuf[I_CTRL] = 0x80;
+            txbuf[I_CMD] = C_ACK;
+            txbuf[I_LEN] = 0;
+            break;
+
+          default:
+            break;
+          }
+
+          txbuf[I_CTR] = rxbuf[I_CTR] | 0x80;
+          RAND_bytes(rxbuf + I_RND, 1);
+          crc = crc16(rxbuf + I_SRC, 9 + rxbuf[I_LEN]);
+          memcpy(txbuf + I_DATA + txbuf[I_LEN], &crc, 2);
+          encryptPacket(txbuf + I_CTR, 16, rd->key, rd->iv, txbuf + I_CTR);
+          send(rf.sock, txbuf, 25, 0);
+
+          printf("resp: { ");
+          for (i = 0; i < 25; i += 1)
+          {
+            printf("%02x ", txbuf[i]);
+          }
+          printf("}\n");
+        } else printf(", crc fail\n");
+
+      } else printf("\nunknown device %08x\n", *((uint32_t *) (rxbuf + I_SRC)));
     }
   }
   pthread_exit(NULL);
@@ -186,12 +240,16 @@ void rfSendPacket(void *arg)
   while (false == list_empty(dev->packetQueue))
   {
     tmp = list_first(dev->packetQueue);
-    RAND_bytes(tmp->data + I_RAND, 1);
+    RAND_bytes(tmp->data + I_RND, 1);
     RAND_bytes((uint8_t *) &sleep, 2);
-    crc = crc16(tmp->data + I_SRC, 30);
-    memcpy(tmp->data + I_CRC, &crc, 2);
-    encryptPacket(tmp->data + I_SRC, 32, dev->key, dev->iv, tmp->data + I_SRC);
-    send(rf.sock, tmp->data, MAX_PACKET_LEN, 0);
-    usleep(2000 + sleep);
+    crc = crc16(tmp->data + I_SRC, 9 + tmp->data[I_LEN]);
+    memcpy(tmp->data + I_DATA + tmp->data[I_LEN], &crc, 2);
+    if (tmp->data[I_CTRL] & 0x80)
+    {
+      encryptPacket(tmp->data + I_CTR, 16, dev->key, dev->iv, tmp->data + I_CTR);
+      tmp->len = 25;
+    }
+    send(rf.sock, tmp->data, tmp->len, 0);
+    usleep(5000 + sleep);
   }
 }

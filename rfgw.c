@@ -15,10 +15,12 @@
 #include "udp.h"
 #include "http.h"
 #include "ws.h"
+#include "list.h"
 
 typedef struct {
   int run;
   int sock;
+  uint32_t devices[2];
 } RfHandler_t;
 
 RfHandler_t app;
@@ -27,10 +29,9 @@ int main(int argc, char * argv[])
 {
   char *line;
   size_t len;
-  pthread_t uthr;
-  pthread_t rthr;
-  pthread_t hthr;
-  pthread_t wthr;
+  int i;
+  pthread_t thr;
+  RfDevice_t *rd;
 
   if (argc <= 1)
   {
@@ -43,8 +44,8 @@ int main(int argc, char * argv[])
     fprintf(stderr, "rfInit failed");
     return 1;
   }
-  pthread_create(&rthr, NULL, rfRecvThread, NULL);
-  pthread_detach(rthr);
+  pthread_create(&thr, NULL, rfRecvThread, NULL);
+  pthread_detach(thr);
 
   if (udpInit(62000))
   {
@@ -52,8 +53,8 @@ int main(int argc, char * argv[])
     rfDeInit();
     return 2;
   }
-  pthread_create(&uthr, NULL, udpListener, NULL);
-  pthread_detach(uthr);
+  pthread_create(&thr, NULL, udpListener, NULL);
+  pthread_detach(thr);
 
   if (httpInit(65001))
   {
@@ -62,8 +63,8 @@ int main(int argc, char * argv[])
     rfDeInit();
     return 3;
   }
-  pthread_create(&hthr, NULL, httpAcceptThread, NULL);
-  pthread_detach(hthr);
+  pthread_create(&thr, NULL, httpAcceptThread, NULL);
+  pthread_detach(thr);
 
   if (wsInit(65000))
   {
@@ -73,8 +74,22 @@ int main(int argc, char * argv[])
     rfDeInit();
     return 3;
   }
-  pthread_create(&wthr, NULL, wsAcceptThread, NULL);
-  pthread_detach(wthr);
+  pthread_create(&thr, NULL, wsAcceptThread, NULL);
+  pthread_detach(thr);
+
+  /* FIXME: load devices from conf */
+  app.devices[0] = 0xa3a4e4ad;
+  app.devices[1] = 0xa3ef74f4;
+  for (i = 0; i < 2; i++)
+  {
+    rd = (RfDevice_t *) malloc(sizeof(RfDevice_t));
+    rd->addr = app.devices[i];
+    memset(rd->key, 0xFF, 16);
+    memset(rd->iv, 0xAA, 16);
+    rd->ctr = 0;
+    rd->packetQueue = list_create();
+    rfAddDevice(rd);
+  }
 
   line = (char *) malloc(80);
   app.run = 1;

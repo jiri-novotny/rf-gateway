@@ -24,6 +24,7 @@ typedef struct packet
 
 uint16_t rfInit(char *iface);
 uint16_t rfDeInit(void);
+uint16_t rfAddDevice(RfDevice_t *newDev);
 uint16_t rfEnqueuePacket(RfPacket_t *packet);
 
 void *rfRecvThread(void *arg);

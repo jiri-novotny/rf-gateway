@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <endian.h>
 #include <sys/syscall.h>
 #include <netinet/in.h>
 #include <openssl/sha.h>
