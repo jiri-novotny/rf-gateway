@@ -10,7 +10,6 @@
 #include <openssl/sha.h>
 
 #include "base64.h"
-#include "jsmn.h"
 #include "ws.h"
 
 typedef struct 

@@ -7,6 +7,7 @@
 typedef struct rf
 {
   uint32_t addr;
+  uint32_t sn;
   uint8_t key[16];
   uint8_t iv[16];
   uint8_t ctr;

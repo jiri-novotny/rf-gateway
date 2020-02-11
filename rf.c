@@ -15,7 +15,6 @@
 #include "const.h"
 #include "crypto.h"
 #include "rf.h"
-#include "thpool.h"
 #include "hashmap.h"
 #include "list.h"
 
@@ -27,11 +26,11 @@ typedef struct
   int sock;
   RfDevice_t gw;
   struct hashmap *devices;
-  threadpool thpool;
 } Rf_t;
 
-void rfSendPacket(void *arg);
 uint16_t crc16(const uint8_t* data, uint8_t length);
+uint32_t fnv1aHash(const void *data, size_t length);
+void rfSendPacket(void *arg);
 
 Rf_t rf;
 
@@ -71,7 +70,6 @@ uint16_t rfInit(char *iface)
 
   memset(rf.gw.key, 0xff, 16);
   memset(rf.gw.iv, 0xAA, 16);
-  rf.thpool = thpool_init(4);
 
   return 0;
 }
@@ -91,7 +89,6 @@ uint16_t rfDeInit()
   }
   entries->destroy(entries);
   hashmap_destroy(rf.devices);
-  thpool_destroy(rf.thpool);
 
   close(rf.sock);
   return 0;
@@ -99,13 +96,14 @@ uint16_t rfDeInit()
 
 uint16_t rfAddDevice(RfDevice_t *newDev)
 {
+  newDev->addr = fnv1aHash((const void *) &newDev->sn, 4);
   RfDevice_t *old = hashmap_set(rf.devices, newDev->addr, newDev);
   if (old != NULL)
   {
     printf("old dev found!\n");
     free(old);
   }
-  printf("dev %08x stored\n", newDev->addr);
+  printf("dev %08x (%08x) stored\n", newDev->sn, newDev->addr);
   return 0;
 }
 
@@ -123,7 +121,7 @@ uint16_t rfEnqueuePacket(RfPacket_t *packet)
       packet->data[I_CTR] = dev->ctr++;
       list_push(dev->packetQueue, packet);
       printf("scheduling packet %d\n", packet->data[I_CTR]);
-      thpool_add_work(rf.thpool, rfSendPacket, dev);
+      /* fixme */
       return 0;
     }
     else
@@ -183,7 +181,11 @@ void *rfRecvThread(void *arg)
           memcpy(txbuf, rxbuf + I_SRC, 4);
           switch (rxbuf[I_CMD])
           {
+            /* check if resp for request */
           case C_NOTIFY:
+          /* do smth */
+
+          /* prepare response - check queue or ack */
             txbuf[I_CTRL] = 0x80;
             txbuf[I_CMD] = C_ACK;
             txbuf[I_LEN] = 0;
@@ -194,8 +196,8 @@ void *rfRecvThread(void *arg)
           }
 
           txbuf[I_CTR] = rxbuf[I_CTR] | 0x80;
-          RAND_bytes(rxbuf + I_RND, 1);
-          crc = crc16(rxbuf + I_SRC, 9 + rxbuf[I_LEN]);
+          RAND_bytes(txbuf + I_RND, 1);
+          crc = crc16(txbuf + I_SRC, 9 + txbuf[I_LEN]);
           memcpy(txbuf + I_DATA + txbuf[I_LEN], &crc, 2);
           encryptPacket(txbuf + I_CTR, 16, rd->key, rd->iv, txbuf + I_CTR);
           send(rf.sock, txbuf, 25, 0);
@@ -223,11 +225,29 @@ uint16_t crc16(const uint8_t* data, uint8_t length)
   while (length--)
   {
     x = crc >> 8 ^ *data++;
-    x ^= x>>4;
-    crc = (crc << 8) ^ ((uint16_t)(x << 12)) ^ ((uint16_t)(x <<5)) ^ ((uint16_t)x);
+    x ^= x >> 4;
+    crc = (crc << 8) ^ ((uint16_t)(x << 12)) ^ ((uint16_t)(x << 5)) ^ ((uint16_t) x);
   }
 
   return crc;
+}
+
+/* Private: Computes the FNV-1a hash of the key data.
+ *
+ * data   - The bytes to hash.
+ * length - The number of bytes in data.
+ *
+ * Returns the numerical hash of the input bytes.
+ */
+uint32_t fnv1aHash(const void *data, size_t length)
+{
+    const unsigned char *bytes = data;
+    uint32_t hash = 2166136261;
+
+    for (size_t i = 0; i < length; i++) {
+        hash = (hash ^ bytes[i]) * 16777619;
+    }
+    return hash;
 }
 
 void rfSendPacket(void *arg)

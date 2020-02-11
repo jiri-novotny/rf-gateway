@@ -13,7 +13,6 @@
 
 #include "rf.h"
 #include "udp.h"
-#include "http.h"
 #include "ws.h"
 #include "list.h"
 
@@ -56,21 +55,10 @@ int main(int argc, char * argv[])
   pthread_create(&thr, NULL, udpListener, NULL);
   pthread_detach(thr);
 
-  if (httpInit(65001))
-  {
-    fprintf(stderr, "httpInit failed");
-    udpDeInit();
-    rfDeInit();
-    return 3;
-  }
-  pthread_create(&thr, NULL, httpAcceptThread, NULL);
-  pthread_detach(thr);
-
   if (wsInit(65000))
   {
     fprintf(stderr, "wsInit failed");
     udpDeInit();
-    httpDeInit();
     rfDeInit();
     return 3;
   }
@@ -78,14 +66,14 @@ int main(int argc, char * argv[])
   pthread_detach(thr);
 
   /* FIXME: load devices from conf */
-  app.devices[0] = 0xa3a4e4ad;
-  app.devices[1] = 0xa3ef74f4;
+  app.devices[0] = 0x61616161;
+  app.devices[1] = 0x62626262;
   for (i = 0; i < 2; i++)
   {
     rd = (RfDevice_t *) malloc(sizeof(RfDevice_t));
-    rd->addr = app.devices[i];
-    memset(rd->key, 0xFF, 16);
-    memset(rd->iv, 0xAA, 16);
+    rd->sn = app.devices[i];
+    memset(rd->key, 0x00, 16);
+    memset(rd->iv, 0x00, 16);
     rd->ctr = 0;
     rd->packetQueue = list_create();
     rfAddDevice(rd);
@@ -100,7 +88,6 @@ int main(int argc, char * argv[])
     {
       app.run = 0;
       wsDeInit();
-      httpDeInit();
       udpDeInit();
       rfDeInit();
     }
