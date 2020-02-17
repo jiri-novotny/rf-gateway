@@ -1,25 +1,17 @@
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <errno.h>
 #include <string.h>
-#include <linux/if.h>
-#include <linux/if_packet.h>
-#include <linux/if_arp.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <pthread.h>
 
+#include "config.h"
 #include "rf.h"
 #include "udp.h"
 #include "ws.h"
-#include "list.h"
 
 typedef struct {
   int run;
   int sock;
-  uint32_t devices[2];
 } RfHandler_t;
 
 RfHandler_t app;
@@ -28,56 +20,57 @@ int main(int argc, char * argv[])
 {
   char *line;
   size_t len;
-  int i;
   pthread_t thr;
-  RfDevice_t *rd;
+  char *interface;
+  RfDevice_t gw;
 
   if (argc <= 1)
   {
-    fprintf(stdout, "USAGE: %s rf_name\n", argv[0]);
+    fprintf(stdout, "USAGE: %s /path/to/config/json\n", argv[0]);
     return 0;
   }
 
-  if (rfInit(argv[1]))
+  if (rfInit())
   {
-    fprintf(stderr, "rfInit failed");
+    fprintf(stderr, "rfInit failed\n");
     return 1;
+  }
+  memset(&gw, 0, sizeof(RfDevice_t));
+
+  if (configParse(argv[1], &interface, &gw))
+  {
+    fprintf(stderr, "config failed\n");
+    return 1;
+  }
+
+  if (rfOpen(interface, &gw))
+  {
+    fprintf(stderr, "rfOpen failed\n");
+    free(interface);
+    rfDeInit();
+    return 2;
   }
   pthread_create(&thr, NULL, rfRecvThread, NULL);
   pthread_detach(thr);
 
   if (udpInit(62000))
   {
-    fprintf(stderr, "udpInit failed");
+    fprintf(stderr, "udpInit failed\n");
     rfDeInit();
-    return 2;
+    return 3;
   }
   pthread_create(&thr, NULL, udpListener, NULL);
   pthread_detach(thr);
 
   if (wsInit(65000))
   {
-    fprintf(stderr, "wsInit failed");
+    fprintf(stderr, "wsInit failed\n");
     udpDeInit();
     rfDeInit();
-    return 3;
+    return 4;
   }
   pthread_create(&thr, NULL, wsAcceptThread, NULL);
   pthread_detach(thr);
-
-  /* FIXME: load devices from conf */
-  app.devices[0] = 0x61616161;
-  app.devices[1] = 0x62626262;
-  for (i = 0; i < 2; i++)
-  {
-    rd = (RfDevice_t *) malloc(sizeof(RfDevice_t));
-    rd->sn = app.devices[i];
-    memset(rd->key, 0x00, 16);
-    memset(rd->iv, 0x00, 16);
-    rd->ctr = 0;
-    rd->packetQueue = list_create();
-    rfAddDevice(rd);
-  }
 
   line = (char *) malloc(80);
   app.run = 1;
@@ -90,6 +83,7 @@ int main(int argc, char * argv[])
       wsDeInit();
       udpDeInit();
       rfDeInit();
+      free(interface);
     }
   }
   free(line);

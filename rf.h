@@ -23,7 +23,11 @@ typedef struct packet
   int miscLen;
 } RfPacket_t;
 
-uint16_t rfInit(char *iface);
+/**
+ * Prepare memory for devices
+ */
+uint16_t rfInit();
+uint16_t rfOpen(char *iface, RfDevice_t *gw);
 uint16_t rfDeInit(void);
 uint16_t rfAddDevice(RfDevice_t *newDev);
 uint16_t rfEnqueuePacket(RfPacket_t *packet);

@@ -85,8 +85,6 @@ void *udpListener(void *arg)
       }
       else
       {
-        /* crc placeholder */
-        packet->len += 2;
         packet->origin = udp.sock;
         rfEnqueuePacket(packet);
 #if 0

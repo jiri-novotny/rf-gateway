@@ -20,6 +20,7 @@
 #define C_WRITE_REG                 0x03 /* sink -> device */
 #define C_NOTIFY                    0x84
 #define C_ACK                       0x04 /* sink -> device */
+#define C_POLL                      0x85
 
 /**
  * Get byte length of the register

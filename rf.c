@@ -32,9 +32,23 @@ uint16_t crc16(const uint8_t* data, uint8_t length);
 uint32_t fnv1aHash(const void *data, size_t length);
 void rfSendPacket(void *arg);
 
-Rf_t rf;
+static Rf_t rf;
 
-uint16_t rfInit(char *iface)
+uint16_t rfInit()
+{
+  uint16_t ret = 1;
+
+  rf.sock = -1;
+  rf.devices = hashmap_create();
+  if (rf.devices)
+  {
+    ret = 0;
+  }
+
+  return ret;
+}
+
+uint16_t rfOpen(char *iface, RfDevice_t *gw)
 {
   struct ifreq req;
   struct sockaddr_ll sll;
@@ -47,6 +61,41 @@ uint16_t rfInit(char *iface)
     return 1;
   }
 
+  if (ioctl(rf.sock, SIOCGIFFLAGS, &req) < 0)
+  {
+    fprintf(stderr, "Get flags failed");
+    close(rf.sock);
+    return 2;
+  }
+
+  if (req.ifr_flags & IFF_UP)
+  {
+    fprintf(stderr, "Interface is already UP.");
+    return 3;
+  }
+
+  /* we use addr as placeholder for bcast */
+  memcpy(req.ifr_hwaddr.sa_data + 4, &gw->addr, 4);
+  /* real address is computed as hash */
+  gw->addr = fnv1aHash(&gw->sn, 4);
+  memcpy(req.ifr_hwaddr.sa_data, &gw->addr, 4);
+  req.ifr_hwaddr.sa_data[8] = 0x00;
+  req.ifr_hwaddr.sa_data[9] = (char) 0xf0;
+  if (ioctl(rf.sock, SIOCSIFHWADDR, &req) < 0)
+  {
+    fprintf(stderr, "Set address failed");
+    close(rf.sock);
+    return 4;
+  }
+
+  req.ifr_flags |= IFF_UP;
+  if (ioctl(rf.sock, SIOCSIFFLAGS, &req) < 0)
+  {
+    fprintf(stderr, "Set flags failed");
+    close(rf.sock);
+    return 5;
+  }
+
   /* Bind our raw socket to this interface */
   sll.sll_family = AF_PACKET,
   sll.sll_protocol = htons(ETH_P_NONE),
@@ -54,29 +103,16 @@ uint16_t rfInit(char *iface)
   if ((bind(rf.sock, (struct sockaddr *) &sll, sizeof(sll))) < 0)
   {
     fprintf(stderr, "Socket bind failed for %s\n", iface);
-    return 2;
-  }
-
-  if (ioctl(rf.sock, SIOCGIFHWADDR, &req) < 0)
-  {
-    fprintf(stderr, "Get address failed");
-    close(rf.sock);
-    return 3;
+    return 6;
   }
 
   rf.run = 1;
-  memcpy(&rf.gw.addr, req.ifr_hwaddr.sa_data, 4);
-  rf.devices = hashmap_create();
-
-  memset(rf.gw.key, 0xff, 16);
-  memset(rf.gw.iv, 0xAA, 16);
 
   return 0;
 }
 
 uint16_t rfDeInit()
 {
-  rf.run = 0;
   struct iterator *entries;
   RfDevice_t *dev;
 
@@ -85,12 +121,16 @@ uint16_t rfDeInit()
   while (entries->next(entries)) {
     struct hentry *entry = entries->current;
     dev = (RfDevice_t *) entry->value;
+    printf("freeing dev %08x\n", dev->sn);
     list_destroy(dev->packetQueue);
+    free(dev);
   }
   entries->destroy(entries);
   hashmap_destroy(rf.devices);
 
-  close(rf.sock);
+  if (rf.sock > 0)
+    close(rf.sock);
+
   return 0;
 }
 
@@ -140,6 +180,7 @@ void *rfRecvThread(void *arg)
   uint8_t txbuf[MAX_PACKET_LEN];
   uint16_t crc;
   RfDevice_t *rd;
+  RfPacket_t *next;
 
   while (rf.run)
   {
@@ -183,14 +224,27 @@ void *rfRecvThread(void *arg)
           {
             /* check if resp for request */
           case C_NOTIFY:
-          /* do smth */
+            /* do smth */
 
-          /* prepare response - check queue or ack */
+            /* prepare response - check queue or ack */
             txbuf[I_CTRL] = 0x80;
             txbuf[I_CMD] = C_ACK;
             txbuf[I_LEN] = 0;
             break;
 
+          case C_POLL:
+            txbuf[I_CTRL] = 0x80;
+            if (list_empty(rd->packetQueue))
+            {
+              txbuf[I_CMD] = C_ACK;
+              txbuf[I_LEN] = 0;
+            }
+            else
+            {
+              next = list_pop(rd->packetQueue);
+              memcpy(txbuf, next->data, next->len);
+            }
+            break;
           default:
             break;
           }
@@ -199,10 +253,20 @@ void *rfRecvThread(void *arg)
           RAND_bytes(txbuf + I_RND, 1);
           crc = crc16(txbuf + I_SRC, 9 + txbuf[I_LEN]);
           memcpy(txbuf + I_DATA + txbuf[I_LEN], &crc, 2);
-          encryptPacket(txbuf + I_CTR, 16, rd->key, rd->iv, txbuf + I_CTR);
+          printf("resp: { ");
+          for (i = 0; i < 25; i += 1)
+          {
+            printf("%02x ", txbuf[i]);
+          }
+          printf("}\n");
+
+          if (txbuf[I_CTRL] & 0x80)
+          {
+            encryptPacket(txbuf + I_CTR, 16, rd->key, rd->iv, txbuf + I_CTR);
+          }
           send(rf.sock, txbuf, 25, 0);
 
-          printf("resp: { ");
+          printf("enc:  { ");
           for (i = 0; i < 25; i += 1)
           {
             printf("%02x ", txbuf[i]);

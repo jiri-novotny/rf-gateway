@@ -1,0 +1,24 @@
+{
+    "description":"This is sample configuration",
+    "version":1,
+    "gateway":
+    {
+        "interface":"rf0",
+        "id":4026531840,
+        "bcast":4294967295,
+        "key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    },
+    "devices":
+    [
+        {
+            "id":1,
+            "key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "name":"test 1"
+        },
+        {
+            "id":2,
+            "key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "name":"test 2"
+        }
+    ]   
+}

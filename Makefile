@@ -9,4 +9,4 @@ compile:
 	$(CROSS_COMPILE)$(CC) *.c -o $(NAME) $(CFLAGS) $(LIBS)
 
 remote:
-	scp rfgw root@192.168.0.28:/tmp
+	scp rfgw root@192.168.24.100:/tmp
