@@ -23,7 +23,7 @@ typedef struct
 {
   uint8_t run;
   int sock;
-  RfDevice_t gw;
+  RfDevice_t *gw;
   struct hashmap *devices;
 } Rf_t;
 
@@ -73,6 +73,7 @@ uint16_t rfOpen(char *iface, RfDevice_t *gw)
   if (req.ifr_flags & IFF_UP)
   {
     fprintf(stderr, "Interface is already UP\n");
+    gw->addr = fnv1aHash(&gw->sn, 4);
   }
   else
   {
@@ -107,6 +108,7 @@ uint16_t rfOpen(char *iface, RfDevice_t *gw)
     return 6;
   }
 
+  rf.gw = gw;
   rf.run = 1;
 
   return 0;
@@ -154,7 +156,7 @@ uint16_t rfEnqueuePacket(RfPacket_t *packet)
 
   if (packet != NULL)
   {
-    memcpy(packet->data + I_SRC, &rf.gw.addr, 4);
+    memcpy(packet->data + I_SRC, &rf.gw->addr, 4);
     printf("packet to %08x\n", *((uint32_t *)(packet->data + I_DST)));
     dev = hashmap_get(rf.devices, *((uint32_t *)(packet->data + I_DST)));
     if (dev != NULL)
@@ -186,7 +188,7 @@ void *rfRecvThread(void *arg)
   while (rf.run)
   {
     memset(txbuf, 0, MAX_PACKET_LEN);
-    memcpy(txbuf + I_SRC, &rf.gw.addr, 4);
+    memcpy(txbuf + I_SRC, &rf.gw->addr, 4);
     len = recvfrom(rf.sock, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
     if (len < 0) continue;
     if (len == 0)
