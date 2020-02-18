@@ -11,6 +11,7 @@
 
 #include "base64.h"
 #include "ws.h"
+#include "rf.h"
 
 typedef struct 
 {
@@ -104,10 +105,7 @@ void *wsRecvThread(void *arg)
   unsigned long long wsLen;
   unsigned keyOffset;
   unsigned char mask[4];
-#if 0
-  jsmn_parser jsonParser;
-  jsmntok_t jsonToken[16];
-#endif
+  RfPacket_t *rp;
 
   fprintf(stdout, "thread %ld start\n", syscall(__NR_gettid));
   memcpy((void *) &sockfd, arg, sizeof(int));
@@ -131,13 +129,14 @@ void *wsRecvThread(void *arg)
           strcat(keyIn, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
         }
       } while (strlen(tmp) > 1);
-      fprintf(stdout, "key %s\n", (char *) keyIn);
       SHA1((unsigned char *)keyIn, SHA_DIGEST_LENGTH, keyOut);
       strcpy((char *) buffer, "HTTP/1.1 101 Switching Protocols\nConnection: Upgrade\nUpgrade: websocket\nSec-WebSocket-Accept: ");
       j = strlen((char *) buffer);
-      strcat((char *)buffer, (char *) base64_encode(keyOut, strlen((char *) keyOut), NULL));
-      strcat((char *)buffer, "\n\n");
-      write(sockfd, buffer, strlen((char *)buffer));
+      tmp = (char *) base64_encode(keyOut, strlen((char *) keyOut), NULL);
+      strcat((char *) buffer, tmp);
+      strcat((char *) buffer, "\n\n");
+      write(sockfd, buffer, strlen((char *) buffer));
+      free(tmp);
 
       while (length)
       {
@@ -184,9 +183,6 @@ void *wsRecvThread(void *arg)
                 length += i;
               }
             }
-
-            fprintf(stdout, "%llu\n", wsLen);
-
             memcpy((void *) &mask, buffer + keyOffset, 4);
             data = (unsigned char *) malloc(wsLen + 1);
             for (i = keyOffset + 4, j = 0; j < wsLen; i++, j++)
@@ -194,44 +190,19 @@ void *wsRecvThread(void *arg)
                data[j] = buffer[i] ^ mask[j & 0x3];
             }
             data[j] = 0;
-#if 0
-            /* packet should be in json format */
-            jsmn_init(&jsonParser);
-            j = jsmn_parse(&jsonParser, (char *) data, strlen((char *) data), jsonToken, sizeof(jsonToken) / sizeof(jsonToken[0]));
-            if (j < 0)
-            {
-              sprintf(response, "{\"response\":\"ERR\", \"data\":[{\"id\":\"text%d""\", \"value\":\"%s\"}]}", 1, "Invalid request");
-              fprintf(stdout, "%s\n", response);
-            }
-            else
-            {
-              /* ws packet received */
-              fprintf(stdout, "%s\n", data);
-
-              /* parse json structure */
-              for (i = 1; i < j; i++) {
-                if (strncmp(((char *) data) + jsonToken[i].start, "data", jsonToken[i].end - jsonToken[i].start) == 0)
-                {
-                  sprintf(response, "{\"response\":\"OK\", \"data\":[{\"id\":\"text%d""\", \"value\":\"%.*s\"}]}", 1, jsonToken[i + 1].end - jsonToken[i + 1].start, data + jsonToken[i + 1].start);
-                  i++;
-                }
-              }
-
-              fprintf(stdout, "%s\n", response);
-            }
-#endif
             baseData = base64_decode(data, j, &baseLen);
             for (j = 0; j < baseLen; j++)
             {
               printf("%02x ", baseData[j]);
             }
             printf("\n");
-            for (j = 0; j < baseLen; j++)
-            {
-              printf("%c ", baseData[j]);
-            }
-            printf("\n");
-            sprintf(response, "{\"response\":\"OK\", \"data\":[]}");
+            rp = (RfPacket_t *) calloc(1, sizeof(RfPacket_t));
+            memcpy(rp->data, baseData, baseLen);
+            free(baseData);
+            rp->len = baseLen;
+            rp->origin = sockfd;
+            rfEnqueuePacket(rp);
+            sprintf(response, "{\"response\":\"OK\",\"status\":202,\"data\":[]}");
             buffer[0] = 0x81; /* fin + text frame */
             wsLen = strlen(response);
             if (wsLen >= 126)
@@ -246,21 +217,8 @@ void *wsRecvThread(void *arg)
               buffer[1] = wsLen & 0xFF;
               keyOffset = 2;
             }
-#ifdef USE_MASK_RESP
-            buffer[1] |= 0x80;
-            memcpy(buffer + keyOffset, mask, 4);
-            keyOffset += 4;
-#endif
-            for (i = keyOffset, j = 0; j < wsLen; i++, j++)
-            {
-#ifdef USE_MASK_RESP
-              buffer[i] = response[j] ^ mask[j & 0x3];
-#else
-              buffer[i] = response[j];
-#endif
-            }
+            memcpy(buffer + keyOffset, response, wsLen);
             write(sockfd, buffer, wsLen + keyOffset);
-            free(baseData);
             free(data);
           }
         }

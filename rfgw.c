@@ -40,14 +40,15 @@ int main(int argc, char * argv[])
   if (configParse(argv[1], &interface, &gw))
   {
     fprintf(stderr, "config failed\n");
+    rfDeInit();
     return 1;
   }
 
   if (rfOpen(interface, &gw))
   {
     fprintf(stderr, "rfOpen failed\n");
-    free(interface);
     rfDeInit();
+    free(interface);
     return 2;
   }
   pthread_create(&thr, NULL, rfRecvThread, NULL);
@@ -57,6 +58,7 @@ int main(int argc, char * argv[])
   {
     fprintf(stderr, "udpInit failed\n");
     rfDeInit();
+    free(interface);
     return 3;
   }
   pthread_create(&thr, NULL, udpListener, NULL);
@@ -67,6 +69,7 @@ int main(int argc, char * argv[])
     fprintf(stderr, "wsInit failed\n");
     udpDeInit();
     rfDeInit();
+    free(interface);
     return 4;
   }
   pthread_create(&thr, NULL, wsAcceptThread, NULL);

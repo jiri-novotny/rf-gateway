@@ -1,4 +1,3 @@
-
 #ifndef WS_H
 #define WS_H
 
@@ -10,4 +9,3 @@ void *wsAcceptThread(void *arg);
 void *wsRecvThread(void *arg);
 
 #endif	/* WS_H */
-
