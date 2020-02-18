@@ -90,8 +90,8 @@ void *wsAcceptThread(void *arg)
 
 void *wsRecvThread(void *arg)
 {
-  unsigned char buffer[WS_BUFFER_SIZE];
-  char response[WS_BUFFER_SIZE];
+  unsigned char *buffer;
+  char response[256];
   unsigned char *data;
   char *tmp;
   char keyIn[128];
@@ -112,7 +112,8 @@ void *wsRecvThread(void *arg)
   memset(keyIn, 0, 128);
   memset(keyOut, 0, 128);
 
-  if ((length = recv(sockfd, buffer, WS_BUFFER_SIZE, 0)) > 0)
+  buffer = malloc(WS_BUFFER_SIZE);
+  if (buffer &&  (length = recv(sockfd, buffer, WS_BUFFER_SIZE, 0)) > 0)
   {
     buffer[length] = 0;
     data = buffer;
@@ -129,10 +130,9 @@ void *wsRecvThread(void *arg)
           strcat(keyIn, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
         }
       } while (strlen(tmp) > 1);
-      SHA1((unsigned char *)keyIn, SHA_DIGEST_LENGTH, keyOut);
+      SHA1((unsigned char *)keyIn, strlen(keyIn), keyOut);
       strcpy((char *) buffer, "HTTP/1.1 101 Switching Protocols\nConnection: Upgrade\nUpgrade: websocket\nSec-WebSocket-Accept: ");
-      j = strlen((char *) buffer);
-      tmp = (char *) base64_encode(keyOut, strlen((char *) keyOut), NULL);
+      tmp = (char *) base64_encode(keyOut, SHA_DIGEST_LENGTH, NULL);
       strcat((char *) buffer, tmp);
       strcat((char *) buffer, "\n\n");
       write(sockfd, buffer, strlen((char *) buffer));
@@ -197,12 +197,15 @@ void *wsRecvThread(void *arg)
             }
             printf("\n");
             rp = (RfPacket_t *) calloc(1, sizeof(RfPacket_t));
-            memcpy(rp->data, baseData, baseLen);
-            free(baseData);
-            rp->len = baseLen;
-            rp->origin = sockfd;
-            rfEnqueuePacket(rp);
-            sprintf(response, "{\"response\":\"OK\",\"status\":202,\"data\":[]}");
+            if (rp)
+            {
+              memcpy(rp->data, baseData, baseLen);
+              free(baseData);
+              rp->len = baseLen;
+              rp->origin = sockfd;
+              rfEnqueuePacket(rp);
+              sprintf(response, "{\"response\":\"OK\",\"status\":202,\"data\":[]}");
+            } else sprintf(response, "{\"response\":\"ERR\",\"status\":403,\"data\":[]}");
             buffer[0] = 0x81; /* fin + text frame */
             wsLen = strlen(response);
             if (wsLen >= 126)
