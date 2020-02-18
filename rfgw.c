@@ -21,7 +21,7 @@ int main(int argc, char * argv[])
   char *line;
   size_t len;
   pthread_t thr;
-  char *interface;
+  char interface[MAX_IFACE_LEN];
   RfDevice_t gw;
 
   if (argc <= 1)
@@ -37,7 +37,7 @@ int main(int argc, char * argv[])
   }
   memset(&gw, 0, sizeof(RfDevice_t));
 
-  if (configParse(argv[1], &interface, &gw))
+  if (configParse(argv[1], interface, &gw))
   {
     fprintf(stderr, "config failed\n");
     rfDeInit();
@@ -48,7 +48,6 @@ int main(int argc, char * argv[])
   {
     fprintf(stderr, "rfOpen failed\n");
     rfDeInit();
-    free(interface);
     return 2;
   }
   pthread_create(&thr, NULL, rfRecvThread, NULL);
@@ -58,7 +57,6 @@ int main(int argc, char * argv[])
   {
     fprintf(stderr, "udpInit failed\n");
     rfDeInit();
-    free(interface);
     return 3;
   }
   pthread_create(&thr, NULL, udpListener, NULL);
@@ -69,7 +67,6 @@ int main(int argc, char * argv[])
     fprintf(stderr, "wsInit failed\n");
     udpDeInit();
     rfDeInit();
-    free(interface);
     return 4;
   }
   pthread_create(&thr, NULL, wsAcceptThread, NULL);
@@ -86,7 +83,6 @@ int main(int argc, char * argv[])
       wsDeInit();
       udpDeInit();
       rfDeInit();
-      free(interface);
     }
   }
   free(line);

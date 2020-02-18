@@ -2,7 +2,10 @@
 #define RF_H
 
 #include <stdint.h>
+#include <linux/if.h>
 #include "const.h"
+
+#define MAX_IFACE_LEN           IFNAMSIZ
 
 typedef struct rf
 {

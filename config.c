@@ -19,7 +19,7 @@ static int jsoneq(const char *json, jsmntok_t *tok, const char *s)
   return -1;
 }
 
-uint16_t configParse(char *path, char **interface, RfDevice_t *gw)
+uint16_t configParse(char *path, char *interface, RfDevice_t *gw)
 {
   int i;
   int r;
@@ -91,7 +91,12 @@ uint16_t configParse(char *path, char **interface, RfDevice_t *gw)
     else if (jsoneq(config, &tok[i], "interface") == 0)
     {
       i++;
-      *interface = strndup(config + tok[i].start, tok[i].end - tok[i].start);
+      if ((tok[i].end - tok[i].start) < MAX_IFACE_LEN)
+      {
+        strncpy(interface, config + tok[i].start, tok[i].end - tok[i].start);
+        interface[tok[i].end - tok[i].start] = 0;
+      }
+      else strcpy(interface, "rf0");
     }
     else if (jsoneq(config, &tok[i], "id") == 0)
     {
@@ -141,7 +146,6 @@ uint16_t configParse(char *path, char **interface, RfDevice_t *gw)
   if (version != SUPPORTED_VERSION)
   {
     fprintf(stderr, "Unsupported config version\n");
-    if (*interface) free(*interface);
     return 1;
   }
 

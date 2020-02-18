@@ -4,7 +4,6 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <string.h>
-#include <linux/if.h>
 #include <linux/if_packet.h>
 #include <linux/if_arp.h>
 #include <arpa/inet.h>
@@ -60,46 +59,48 @@ uint16_t rfOpen(char *iface, RfDevice_t *gw)
     fprintf(stderr, "Socket index failed for %s\n", iface);
     return 1;
   }
+  sll.sll_family = AF_PACKET,
+  sll.sll_protocol = htons(ETH_P_NONE),
+  sll.sll_ifindex = req.ifr_ifindex;
 
   if (ioctl(rf.sock, SIOCGIFFLAGS, &req) < 0)
   {
-    fprintf(stderr, "Get flags failed");
+    fprintf(stderr, "Get flags failed\n");
     close(rf.sock);
     return 2;
   }
 
   if (req.ifr_flags & IFF_UP)
   {
-    fprintf(stderr, "Interface is already UP.");
-    return 3;
+    fprintf(stderr, "Interface is already UP\n");
   }
-
-  /* we use addr as placeholder for bcast */
-  memcpy(req.ifr_hwaddr.sa_data + 4, &gw->addr, 4);
-  /* real address is computed as hash */
-  gw->addr = fnv1aHash(&gw->sn, 4);
-  memcpy(req.ifr_hwaddr.sa_data, &gw->addr, 4);
-  req.ifr_hwaddr.sa_data[8] = 0x00;
-  req.ifr_hwaddr.sa_data[9] = (char) 0xf0;
-  if (ioctl(rf.sock, SIOCSIFHWADDR, &req) < 0)
+  else
   {
-    fprintf(stderr, "Set address failed");
-    close(rf.sock);
-    return 4;
-  }
+    req.ifr_hwaddr.sa_family = ARPHRD_NONE;
+    /* we use addr as placeholder for bcast */
+    memcpy(req.ifr_hwaddr.sa_data + 4, &gw->addr, 4);
+    /* real address is computed as hash */
+    gw->addr = fnv1aHash(&gw->sn, 4);
+    memcpy(req.ifr_hwaddr.sa_data, &gw->addr, 4);
+    req.ifr_hwaddr.sa_data[8] = 0x00;
+    req.ifr_hwaddr.sa_data[9] = (char) 0xf0;
+    if (ioctl(rf.sock, SIOCSIFHWADDR, &req) < 0)
+    {
+      fprintf(stderr, "Set address failed\n");
+      close(rf.sock);
+      return 4;
+    }
 
-  req.ifr_flags |= IFF_UP;
-  if (ioctl(rf.sock, SIOCSIFFLAGS, &req) < 0)
-  {
-    fprintf(stderr, "Set flags failed");
-    close(rf.sock);
-    return 5;
+    req.ifr_flags |= IFF_UP;
+    if (ioctl(rf.sock, SIOCSIFFLAGS, &req) < 0)
+    {
+      fprintf(stderr, "Set flags failed\n");
+      close(rf.sock);
+      return 5;
+    }
   }
 
   /* Bind our raw socket to this interface */
-  sll.sll_family = AF_PACKET,
-  sll.sll_protocol = htons(ETH_P_NONE),
-  sll.sll_ifindex = req.ifr_ifindex;
   if ((bind(rf.sock, (struct sockaddr *) &sll, sizeof(sll))) < 0)
   {
     fprintf(stderr, "Socket bind failed for %s\n", iface);
