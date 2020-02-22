@@ -153,6 +153,8 @@ uint16_t rfAddDevice(RfDevice_t *newDev)
 uint16_t rfEnqueuePacket(RfPacket_t *packet)
 {
   RfDevice_t *dev;
+  uint8_t txbuf[MAX_PACKET_LEN];
+  uint16_t crc;
 
   if (packet != NULL)
   {
@@ -162,9 +164,30 @@ uint16_t rfEnqueuePacket(RfPacket_t *packet)
     if (dev != NULL)
     {
       packet->data[I_CTR] = dev->ctr++;
-      list_push(dev->packetQueue, packet);
       printf("scheduling packet %d\n", packet->data[I_CTR]);
       /* fixme */
+#if 0
+      list_push(dev->packetQueue, packet);
+#else
+      memcpy(txbuf, packet->data, packet->len);
+      free(packet);
+      RAND_bytes(txbuf + I_RND, 1);
+      crc = crc16(txbuf + I_SRC, 9 + txbuf[I_LEN]);
+      memcpy(txbuf + I_DATA + txbuf[I_LEN], &crc, 2);
+      if (txbuf[I_CTRL] & 0x80)
+      {
+        if (dev->sn & 0xF0000000) dev = rf.gw;
+        encryptPacket(txbuf + I_CTR, 16, dev->key, dev->iv, txbuf + I_CTR);
+      }
+
+      send(rf.sock, txbuf, 25, 0);
+      printf("sent: { ");
+      for (crc = 0; crc < 25; crc += 1)
+      {
+        printf("%02x ", txbuf[crc]);
+      }
+      printf("}\n");
+#endif
       return 0;
     }
     else
@@ -181,14 +204,16 @@ void *rfRecvThread(void *arg)
   int len;
   uint8_t rxbuf[MAX_PACKET_LEN];
   uint8_t txbuf[MAX_PACKET_LEN];
+  uint8_t sendResp;
   uint16_t crc;
-  RfDevice_t *rd;
+  RfDevice_t *dev;
   RfPacket_t *next;
 
   while (rf.run)
   {
     memset(txbuf, 0, MAX_PACKET_LEN);
     memcpy(txbuf + I_SRC, &rf.gw->addr, 4);
+    sendResp = 1;
     len = recvfrom(rf.sock, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
     if (len < 0) continue;
     if (len == 0)
@@ -204,12 +229,12 @@ void *rfRecvThread(void *arg)
       }
       printf("}");
 
-      rd = hashmap_get(rf.devices, *((uint32_t *) &rxbuf[4]));
-      if (rd != NULL)
+      dev = hashmap_get(rf.devices, *((uint32_t *) &rxbuf[4]));
+      if (dev != NULL)
       {
         if (rxbuf[I_CTRL] & 0x80)
         {
-          decryptPacket(rxbuf + I_CTR, 16, rd->key, rd->iv, rxbuf + I_CTR);
+          decryptPacket(rxbuf + I_CTR, 16, dev->key, dev->iv, rxbuf + I_CTR);
           printf("\ndec:  { ");
           for (i = 0; i < len; i += 1)
           {
@@ -223,58 +248,81 @@ void *rfRecvThread(void *arg)
         {
           printf(", crc ok\n");
           memcpy(txbuf, rxbuf + I_SRC, 4);
+          if (rxbuf[I_CTRL] & 0x80) 
+          {
+            txbuf[I_CTRL] = 0x80;
+          }
           switch (rxbuf[I_CMD])
           {
             /* check if resp for request */
-          case C_NOTIFY:
-            /* do smth */
-
-            /* prepare response - check queue or ack */
-            txbuf[I_CTRL] = 0x80;
-            txbuf[I_CMD] = C_ACK;
-            txbuf[I_LEN] = 0;
-            break;
-
-          case C_POLL:
-            txbuf[I_CTRL] = 0x80;
-            if (list_empty(rd->packetQueue))
-            {
+            case C_DISCOVER:
+              txbuf[I_CMD] = C_DISCOVER_RESP;
+              txbuf[I_LEN] = 4;
+              memset(txbuf + I_DATA, 0x11, txbuf[I_LEN]);
+              break;
+            case C_READ_REG:
+              txbuf[I_CMD] = C_RW_RESP;
+              txbuf[I_LEN] = 4;
+              memset(txbuf + I_DATA, 0x22, txbuf[I_LEN]);
+              break;
+            case C_WRITE_REG:
+              txbuf[I_CMD] = C_RW_RESP;
+              txbuf[I_LEN] = 4;
+              memset(txbuf + I_DATA, 0x33, txbuf[I_LEN]);
+              break;
+            case C_NOTIFY:
               txbuf[I_CMD] = C_ACK;
-              txbuf[I_LEN] = 0;
-            }
-            else
+              txbuf[I_LEN] = 4;
+              memset(txbuf + I_DATA, 0x44, txbuf[I_LEN]);
+              break;
+            case C_POLL:
+              if (list_empty(dev->packetQueue))
+              {
+                txbuf[I_CMD] = C_ACK;
+                txbuf[I_LEN] = 0;
+              }
+              else
+              {
+                next = list_pop(dev->packetQueue);
+                memcpy(txbuf, next->data, next->len);
+              }
+              break;
+            case C_ACK:
+              sendResp = 0;
+              break;
+            default:
+              printf("unknown command %02x", rxbuf[I_CMD]);
+              sendResp = 0;
+              break;
+          }
+
+          if (sendResp)
+          {
+            txbuf[I_CTR] = rxbuf[I_CTR] | 0x80;
+            RAND_bytes(txbuf + I_RND, 1);
+            crc = crc16(txbuf + I_SRC, 9 + txbuf[I_LEN]);
+            memcpy(txbuf + I_DATA + txbuf[I_LEN], &crc, 2);
+            printf("resp: { ");
+            for (i = 0; i < 25; i += 1)
             {
-              next = list_pop(rd->packetQueue);
-              memcpy(txbuf, next->data, next->len);
+              printf("%02x ", txbuf[i]);
             }
-            break;
-          default:
-            break;
-          }
+            printf("}\n");
 
-          txbuf[I_CTR] = rxbuf[I_CTR] | 0x80;
-          RAND_bytes(txbuf + I_RND, 1);
-          crc = crc16(txbuf + I_SRC, 9 + txbuf[I_LEN]);
-          memcpy(txbuf + I_DATA + txbuf[I_LEN], &crc, 2);
-          printf("resp: { ");
-          for (i = 0; i < 25; i += 1)
-          {
-            printf("%02x ", txbuf[i]);
-          }
-          printf("}\n");
+            if (txbuf[I_CTRL] & 0x80)
+            {
+              if (dev->sn & 0xF0000000) dev = rf.gw;
+              encryptPacket(txbuf + I_CTR, 16, dev->key, dev->iv, txbuf + I_CTR);
+            }
+            send(rf.sock, txbuf, 25, 0);
 
-          if (txbuf[I_CTRL] & 0x80)
-          {
-            encryptPacket(txbuf + I_CTR, 16, rd->key, rd->iv, txbuf + I_CTR);
+            printf("enc:  { ");
+            for (i = 0; i < 25; i += 1)
+            {
+              printf("%02x ", txbuf[i]);
+            }
+            printf("}\n");
           }
-          send(rf.sock, txbuf, 25, 0);
-
-          printf("enc:  { ");
-          for (i = 0; i < 25; i += 1)
-          {
-            printf("%02x ", txbuf[i]);
-          }
-          printf("}\n");
         } else printf(", crc fail\n");
 
       } else printf("\nunknown device %08x\n", *((uint32_t *) (rxbuf + I_SRC)));
