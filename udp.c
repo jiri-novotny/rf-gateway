@@ -72,6 +72,7 @@ void *udpListener(void *arg)
 {
   RfPacket_t *packet;
 
+  (void) arg;
   while (udp.run)
   {
     packet = (RfPacket_t *) calloc(1, sizeof(RfPacket_t));

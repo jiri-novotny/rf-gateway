@@ -209,6 +209,7 @@ void *rfRecvThread(void *arg)
   RfDevice_t *dev;
   RfPacket_t *next;
 
+  (void) arg;
   while (rf.run)
   {
     memset(txbuf, 0, MAX_PACKET_LEN);

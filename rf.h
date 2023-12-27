@@ -2,10 +2,9 @@
 #define RF_H
 
 #include <stdint.h>
-#include <linux/if.h>
 #include "const.h"
 
-#define MAX_IFACE_LEN           IFNAMSIZ
+#define MAX_IFACE_LEN           16
 
 typedef struct rf
 {
@@ -20,7 +19,7 @@ typedef struct rf
 typedef struct packet
 {
   uint8_t data[MAX_PACKET_LEN];
-  uint8_t len;
+  ssize_t len;
   int origin;
   uint8_t misc[128];
   int miscLen;

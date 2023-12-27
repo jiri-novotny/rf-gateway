@@ -2,10 +2,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <openssl/evp.h>
 
 #include "config.h"
 #include "jsmn.h"
-#include "base64.h"
 #include "list.h"
 #include "rf.h"
 
@@ -115,9 +115,10 @@ uint16_t configParse(char *path, char *interface, RfDevice_t *gw)
     else if (jsoneq(config, &tok[i], "key") == 0)
     {
       i++;
-      tmp = base64_decode((unsigned char *) config + tok[i].start, tok[i].end - tok[i].start, &len);
+      tmp = malloc(tok[i].end - tok[i].start);
       if (tmp)
       {
+        len = EVP_DecodeBlock(tmp, (unsigned char *) config + tok[i].start, tok[i].end - tok[i].start);
         if (len >= 32)
         {
           memcpy(rd->key, tmp, 16);

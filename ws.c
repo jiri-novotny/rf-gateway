@@ -8,8 +8,8 @@
 #include <sys/syscall.h>
 #include <netinet/in.h>
 #include <openssl/sha.h>
+#include <openssl/evp.h>
 
-#include "base64.h"
 #include "ws.h"
 #include "rf.h"
 
@@ -72,6 +72,7 @@ void *wsAcceptThread(void *arg)
   unsigned int remoteAddrLen = sizeof(remoteAddr);
   pthread_t client;
 
+  (void) arg;
   while (ws.run)
   {
     if ((remoteSockfd = accept(ws.sock, (struct sockaddr *) &remoteAddr, &remoteAddrLen)) == -1)
@@ -95,14 +96,15 @@ void *wsRecvThread(void *arg)
   unsigned char *data;
   char *tmp;
   char keyIn[128];
-  unsigned char keyOut[128];
+  unsigned char keyOut[20];
+  unsigned char keyBase[30];
 	ssize_t length;
   int sockfd;
-  int i;
-  int j;
+  uint32_t i;
+  uint32_t j;
   size_t baseLen;
   unsigned char *baseData;
-  unsigned long long wsLen;
+  uint32_t wsLen;
   unsigned keyOffset;
   unsigned char mask[4];
   RfPacket_t *rp;
@@ -131,10 +133,10 @@ void *wsRecvThread(void *arg)
         }
       } while (strlen(tmp) > 1);
       SHA1((unsigned char *)keyIn, strlen(keyIn), keyOut);
-      strcpy((char *) buffer, "HTTP/1.1 101 Switching Protocols\nConnection: Upgrade\nUpgrade: websocket\nSec-WebSocket-Accept: ");
-      tmp = (char *) base64_encode(keyOut, SHA_DIGEST_LENGTH, NULL);
+      strcpy((char *) buffer, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ");
+      EVP_EncodeBlock(keyBase, keyOut, SHA_DIGEST_LENGTH);
       strcat((char *) buffer, tmp);
-      strcat((char *) buffer, "\n\n");
+      strcat((char *) buffer, "\r\n\r\n");
       write(sockfd, buffer, strlen((char *) buffer));
       free(tmp);
 
@@ -171,8 +173,13 @@ void *wsRecvThread(void *arg)
             }
             else if (wsLen == 127)
             {
-              memcpy((void *) &wsLen, buffer + 2, 8);
-              wsLen = htobe64(wsLen);
+              memcpy((void *) &wsLen, buffer + 2, 4);
+              if (wsLen > 0)
+              {
+                printf("WS: invalid size\n");
+              }
+              memcpy((void *) &wsLen, buffer + 6, 4);
+              wsLen = htonl(wsLen);
               keyOffset = 10;
             }
 
@@ -185,44 +192,51 @@ void *wsRecvThread(void *arg)
             }
             memcpy((void *) &mask, buffer + keyOffset, 4);
             data = (unsigned char *) malloc(wsLen + 1);
-            for (i = keyOffset + 4, j = 0; j < wsLen; i++, j++)
+            if (data)
             {
-               data[j] = buffer[i] ^ mask[j & 0x3];
+              for (i = keyOffset + 4, j = 0; j < wsLen; i++, j++)
+              {
+                data[j] = buffer[i] ^ mask[j & 0x3];
+              }
+              data[j] = 0;
+              baseData = (unsigned char *) malloc(j);
+              if (baseData)
+              {
+                baseLen = EVP_DecodeBlock(baseData, data, j);
+                for (j = 0; j < baseLen; j++)
+                {
+                  printf("%02x ", baseData[j]);
+                }
+                printf("\n");
+                rp = (RfPacket_t *) calloc(1, sizeof(RfPacket_t));
+                if (rp)
+                {
+                  memcpy(rp->data, baseData, baseLen);
+                  rp->len = baseLen;
+                  rp->origin = sockfd;
+                  rfEnqueuePacket(rp);
+                  sprintf(response, "{\"response\":\"OK\",\"status\":202,\"data\":[]}");
+                } else sprintf(response, "{\"response\":\"ERR\",\"status\":403,\"data\":[]}");
+                buffer[0] = 0x81; /* fin + text frame */
+                wsLen = strlen(response);
+                if (wsLen >= 126)
+                {
+                  buffer[1] = 0x7E;
+                  buffer[2] = (wsLen >> 8) & 0xFF;
+                  buffer[3] = wsLen & 0xFF;
+                  keyOffset = 4;
+                }
+                else
+                {
+                  buffer[1] = wsLen & 0xFF;
+                  keyOffset = 2;
+                }
+                memcpy(buffer + keyOffset, response, wsLen);
+                write(sockfd, buffer, wsLen + keyOffset);
+                free(baseData);
+              }
+              free(data);
             }
-            data[j] = 0;
-            baseData = base64_decode(data, j, &baseLen);
-            for (j = 0; j < baseLen; j++)
-            {
-              printf("%02x ", baseData[j]);
-            }
-            printf("\n");
-            rp = (RfPacket_t *) calloc(1, sizeof(RfPacket_t));
-            if (rp)
-            {
-              memcpy(rp->data, baseData, baseLen);
-              free(baseData);
-              rp->len = baseLen;
-              rp->origin = sockfd;
-              rfEnqueuePacket(rp);
-              sprintf(response, "{\"response\":\"OK\",\"status\":202,\"data\":[]}");
-            } else sprintf(response, "{\"response\":\"ERR\",\"status\":403,\"data\":[]}");
-            buffer[0] = 0x81; /* fin + text frame */
-            wsLen = strlen(response);
-            if (wsLen >= 126)
-            {
-              buffer[1] = 0x7E;
-              buffer[2] = (wsLen >> 8) & 0xFF;
-              buffer[3] = wsLen & 0xFF;
-              keyOffset = 4;
-            }
-            else
-            {
-              buffer[1] = wsLen & 0xFF;
-              keyOffset = 2;
-            }
-            memcpy(buffer + keyOffset, response, wsLen);
-            write(sockfd, buffer, wsLen + keyOffset);
-            free(data);
           }
         }
       }
