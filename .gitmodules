@@ -1,0 +1,9 @@
+[submodule "lib/modules"]
+	path = lib/modules
+	url = git@github.com:jiri-novotny/modules.git
+[submodule "lib/ds"]
+	path = lib/ds
+	url = https://github.com/dgraham/libds.git
+[submodule "lib/jsmn"]
+	path = lib/jsmn
+	url = https://github.com/zserge/jsmn.git

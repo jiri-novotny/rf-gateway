@@ -54,3 +54,4 @@ rfgw
 .vscode/
 
 home.json
+build/
