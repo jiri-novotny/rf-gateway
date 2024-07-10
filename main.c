@@ -32,14 +32,18 @@
 
 #define WS_PING_TIMEOUT 45 /* [s] */
 
+enum
+{
+  WS_CMD_LEARN = 1,
+  WS_CMD_BC,
+  WS_CMD_SEND,
+};
+
 /* Typedefs */
 typedef struct
 {
-  int websock;
-  int ysock;
+  int wsock;
   int tfd;
-  uint32_t hwAddress;
-  uint8_t session;
 } clientCtx_t;
 
 typedef struct
@@ -47,9 +51,10 @@ typedef struct
   uint8_t logLevel;
   struct hashmap *clients;
   int clientsLen;
-  uint16_t tcpServerPort;
+  uint16_t wsServerPort;
   char *rfIface;
   uint32_t rfSn;
+  int rsock;
 } appCtx_t;
 
 /* Module globals */
@@ -98,8 +103,109 @@ static void wsSend(clientCtx_t *cc, uint8_t type, char *response)
 {
   ssize_t len = 0;
   if (response) len = strlen(response);
-  websocketSend(cc->websock, type, (uint8_t *) response, len);
+  websocketSend(cc->wsock, type, (uint8_t *) response, len);
   timerSet(cc->tfd, WS_PING_TIMEOUT, 0);
+}
+
+/* Public callbacks */
+static void clientTimer(void *arg)
+{
+  clientCtx_t *cc = (clientCtx_t *) arg;
+  if (cc)
+  {
+    writeLog(LOG_DEBUG, "WS:  client %d timer\n", cc->wsock);
+    wsSend(cc, 9, NULL);
+  }
+}
+
+static void wsOnConnect(int sock)
+{
+  struct hkey hk = {&sock, sizeof(int)};
+
+  clientCtx_t *cc = (clientCtx_t *) malloc(sizeof(clientCtx_t));
+  if (cc)
+  {
+    cc->wsock = sock;
+    hashmap_set(app.clients, &hk, cc);
+    app.clientsLen++;
+    cc->tfd = timerCreate("client", clientTimer, cc);
+    if (cc->tfd == -1) writeLog(LOG_WARNING, "WS:  client timer fail\n");
+    else timerSet(cc->tfd, WS_PING_TIMEOUT, 0);
+    writeLog(LOG_NOTICE, "WS:  client %d connected\n", sock);
+  }
+  else
+  {
+    websocketSend(sock, 1, (uint8_t *) "{\"msg\":\"ws failed - ctx\"}", 25);
+  }
+}
+
+static void wsOnDisconnect(int sock)
+{
+  struct hkey hk = {&sock, sizeof(int)};
+
+  clientCtx_t *cc = hashmap_remove(app.clients, &hk);
+  if (cc)
+  {
+    writeLog(LOG_NOTICE, "WS: %d disconnecting...\n", sock);
+    app.clientsLen--;
+    cc->wsock = -1;
+    if (cc->tfd > 0) timerClose(cc->tfd);
+    free(cc);
+  }
+  else writeLog(LOG_WARNING, "WS:  disconnect unknown ctx %d\n", sock);
+}
+
+static void wsOnData(int sock, uint8_t opcode, uint8_t *data, ssize_t len)
+{
+  (void) opcode;
+  struct hkey hk = {&sock, sizeof(int)};
+  char *tmp = (char *) data;
+  jsmn_parser jp;
+  jsmntok_t jt[128];
+  int i;
+  int r;
+  uint8_t cmd = 0;
+  char *payload = NULL;
+  int payloadLen = 0;
+  uint32_t addr;
+  clientCtx_t *cc;
+
+  jsmn_init(&jp);
+  r = jsmn_parse(&jp, tmp, len, jt, 128);
+
+  for (i = 1; i < r; i++)
+  {
+    if (jsoneq(tmp, &jt[i], "cmd") == 0)
+    {
+      if (jsoneq(tmp, &jt[i + 1], "learn") == 0) cmd = WS_CMD_LEARN;
+      else if (jsoneq(tmp, &jt[i + 1], "bc") == 0) cmd = WS_CMD_BC;
+      else if (jsoneq(tmp, &jt[i + 1], "send") == 0) cmd = WS_CMD_BC;
+    }
+    else if (jsoneq(tmp, &jt[i], "data") == 0)
+    {
+      payloadLen = jt[i + 1].end - jt[i + 1].start;
+      payload = &tmp[jt[i + 1].start];
+    }
+    else if (jsoneq(tmp, &jt[i], "addr") == 0)
+    {
+      addr = strtoul(&tmp[jt[i + 1].start], NULL, 10);
+    }
+  }
+
+  cc = hashmap_get(app.clients, &hk);
+  if (cc)
+  {
+    switch (cmd)
+    {
+      case WS_CMD_LEARN:
+        rfServerAdd(app.rsock, addr, data, &data[16]);
+        break;
+
+      default:
+        writeLog(LOG_WARNING, "unhandled data from %d: %.*s\n", cc->wsock, payloadLen, payload);
+        break;
+    }
+  }
 }
 
 static void rfOnData(int16_t rssi, uint8_t *data, uint32_t len)
@@ -120,7 +226,7 @@ int main(int argc, char **argv)
   app.logLevel = LOG_DEFAULT;
   app.rfIface = "rf0";
   app.rfSn = 0xf0000001;
-  app.tcpServerPort = 8080;
+  app.wsServerPort = 8080;
   logInit(argv[0], 0);
 
   while ((optval = getopt_long(argc, argv, "hVHlp:s:", opt, NULL)) != -1)
@@ -132,7 +238,7 @@ int main(int argc, char **argv)
         break;
 
       case 'p':
-        app.tcpServerPort = (uint16_t) strtoul(optarg, NULL, 10);
+        app.wsServerPort = (uint16_t) strtoul(optarg, NULL, 10);
         break;
 
       case 's':
@@ -169,11 +275,10 @@ int main(int argc, char **argv)
   }
 
   signalsInit(&gc);
-  int r = rfServerInit(&gc, app.rfIface, app.rfSn, rfOnData);
-  rfServerAdd(r, 0x001000d9, key, iv);
-  rfServerAdd(r, 0x0050002e, key, iv);
-  websocketInit(&gc);
-  tcpServerInit(&gc, app.tcpServerPort);
+  app.rsock = rfServerInit(&gc, app.rfIface, app.rfSn, rfOnData);
+  rfServerAdd(app.rsock, 0x001000d9, key, iv);
+  rfServerAdd(app.rsock, 0x0050002e, key, iv);
+  websocketInit(&gc, app.wsServerPort, wsOnConnect, wsOnDisconnect, wsOnData);
 
   /* eventloop handler */
   writeLog(LOG_NOTICE, "%s running ...\n", PROG_NAME);
@@ -183,9 +288,8 @@ int main(int argc, char **argv)
   }
 
   /* DEINIT section */
-  tcpServerDeinit();
   websocketDeinit();
-  rfServerDeinit(r);
+  rfServerDeinit(app.rsock);
   signalsDeinit();
 
   if (app.clients)
@@ -212,17 +316,6 @@ int main(int argc, char **argv)
   return 0;
 }
 
-/* Public callbacks */
-static void clientTimer(void *arg)
-{
-  clientCtx_t *cc = (clientCtx_t *) arg;
-  if (cc)
-  {
-    writeLog(LOG_DEBUG, "WS:  client %d timer\n", cc->websock);
-    wsSend(cc, 9, NULL);
-  }
-}
-
 /* Override */
 void signalsSigint(void)
 {
@@ -245,83 +338,4 @@ void signalsSigusr2(void)
   else if (app.logLevel == LOG_INFO) app.logLevel = LOG_DEBUG;
   else app.logLevel = LOG_WARNING;
   logSetLevel(app.logLevel);
-}
-
-void websocketOnConnect(int sock)
-{
-  struct hkey hk = {&sock, sizeof(int)};
-
-  clientCtx_t *cc = (clientCtx_t *) malloc(sizeof(clientCtx_t));
-  if (cc)
-  {
-    cc->websock = sock;
-    hashmap_set(app.clients, &hk, cc);
-    cc->tfd = timerCreate("client", clientTimer, cc);
-    if (cc->tfd == -1) writeLog(LOG_WARNING, "WS:  client timer fail\n");
-    else timerSet(cc->tfd, WS_PING_TIMEOUT, 0);
-    writeLog(LOG_NOTICE, "WS:  client %d connected\n", sock);
-  }
-  else
-  {
-    websocketSend(sock, 1, (uint8_t *) "{\"msg\":\"ws failed - ctx\"}", 25);
-  }
-}
-
-void websocketOnDisconnect(int sock)
-{
-  struct hkey hk = {&sock, sizeof(int)};
-
-  clientCtx_t *cc = hashmap_remove(app.clients, &hk);
-  if (cc)
-  {
-    cc->websock = -1;
-    hk.data = &cc->tfd;
-    if (cc->tfd > 0) hashmap_remove(app.clients, &hk);
-    else free(cc);
-  }
-  else writeLog(LOG_WARNING, "WS:  disconnect unknown ctx %d\n", sock);
-}
-
-void websocketOnData(int sock, uint8_t opcode, uint8_t *data, ssize_t len)
-{
-  (void) opcode;
-  struct hkey hk = {&sock, sizeof(int)};
-  char *tmp = (char *) data;
-  jsmn_parser jp;
-  jsmntok_t jt[128];
-  int i;
-  int r;
-  uint8_t cmd = 0;
-  char *payload = NULL;
-  int payloadLen = 0;
-  clientCtx_t *cc;
-
-  jsmn_init(&jp);
-  r = jsmn_parse(&jp, tmp, len, jt, 128);
-
-  for (i = 1; i < r; i++)
-  {
-    if (jsoneq(tmp, &jt[i], "cmd") == 0)
-    {
-      if (jsoneq(tmp, &jt[i + 1], "open") == 0) cmd = 1;
-    }
-    else if (jsoneq(tmp, &jt[i], "data") == 0)
-    {
-      payloadLen = jt[i + 1].end - jt[i + 1].start;
-      payload = &tmp[jt[i + 1].start];
-    }
-  }
-
-  cc = hashmap_get(app.clients, &hk);
-  if (cc)
-  {
-    
-  }
-
-  switch (cmd)
-  {
-    default:
-      writeLog(LOG_WARNING, "WS:  invalid cmd %.*s\n", payloadLen, payload);
-      break;
-  }
 }
